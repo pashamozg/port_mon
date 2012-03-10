@@ -71,10 +71,10 @@ sub snmp_req {
     my ($session, $error) = Net::SNMP->session(
             -hostname     =>  $ip,
             -community    =>  $community,
-            -version    => 'snmpv2c',
-            -timeout    => 2,
-            -retries    => 2,
-            -nonblocking   => 1,
+            -version      => 'snmpv2c',
+            -timeout      =>  2,
+            -retries      =>  2,
+            -nonblocking  =>  1,
             );  
 
     if (!defined $session) {
@@ -84,7 +84,7 @@ sub snmp_req {
 
     my $result = $session->get_request(
             -varbindlist => $oids,
-            -callback  => [ \&get_callback , $shared, $type, $oids],
+            -callback    => [ \&get_callback , $shared, $type, $oids],
             );  
 
     if (!defined $result) {
@@ -100,12 +100,7 @@ sub search_new_devices {
         my %dp;
         my $host_count;
         do{
-            if(exists $devices->{$ip->ip()}){
-#                next;
-            }
-            if( snmp_req( $ip->ip(), [$aux_oids{ifnum}], $devices) == -1 ){
-                next;
-            }
+            snmp_req( $ip->ip(), [$aux_oids{ifnum}], $devices);
             ++$host_count;
             if($host_count==150){
                 snmp_dispatcher();
@@ -119,7 +114,6 @@ sub search_new_devices {
 
 sub polling_devices {
     my ($devices) = @_;
-    print "polling \n";
     foreach my $ip (keys %$devices){
         foreach my $int (1 .. $devices->{$ip}->{num}){
             my @r_oids = map {$_.".$int"} @oids;
