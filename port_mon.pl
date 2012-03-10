@@ -5,9 +5,14 @@ use File::Path;
 use RRDTool::OO;
 use Data::Dumper;
 my @kv = (
+        # 64bit
        {'1.3.6.1.2.1.31.1.1.1.6' =>'bytesIn',
         '1.3.6.1.2.1.31.1.1.1.10' =>'bytesOut',
        },
+        # 32bit
+       {'1.3.6.1.2.1.2.2.1.10' =>'bytesIn',
+        '1.3.6.1.2.1.2.2.1.16' =>'bytesOut',
+        },
        {'1.3.6.1.2.1.2.2.1.14'=>'errorIn',
         '1.3.6.1.2.1.2.2.1.20'=>'errorOut',
         },
@@ -41,7 +46,6 @@ sub rrd_graph {
                 );
         push @draw, %tmp;
     }
-#print Dumper($ds, \@draw);
     if( (stat($file))[9] < $end-$image_refresh_time){
         $rrd->graph(
                 image          => $file,
@@ -59,39 +63,38 @@ if(defined $dev && defined $port){
     my $end = time();
     my $start  = $end - (300*12*24*31);
     foreach my $in_out (@kv){
-    my $rrd = RRDTool::OO->new( file => "$path/myrrdfile.rrd" );
-    my @ds = values %$in_out;
-    my @oids = keys %$in_out;
-    my $base_name = ($ds[0]=~/bytes/)?'bytes':'errors';
-    $rrd->create(
-            step        => 60,  # one-second intervals
-            start       => $start,
-            data_source => { 
-            name      => $ds[0],
-            type      => "GAUGE" },
-            data_source => {
-            name    => $ds[1],
-            type    => 'GAUGE'},
-            archive     => { 
-            rows      => 60*24*31,
-#cpoints   => 5,
-                cfunc     => 'AVERAGE',
-            },
-            archive => {
-            rows    => 60*24*31,
-                cfunc     => 'AVERAGE',
-            },
+        my @ds = values %$in_out;
+        my @oids = keys %$in_out;
+        if(exists $devices->{$dev}->{stat}->{$port} && exists $devices->{$dev}->{stat}->{$port}->{$oids[0]}){
+            my @t = sort keys %{$devices->{$dev}->{stat}->{$port}->{$oids[0]}};
+            next unless ($#t>0);
+            my $rrd = RRDTool::OO->new( file => "$path/myrrdfile.rrd" );
+            my $base_name = ($ds[0]=~/bytes/)?'bytes':'errors';
+            $rrd->create(
+                    step        => 60,  # one-second intervals
+                    start       => $start,
+                    data_source => { 
+                        name      => $ds[0],
+                        type      => "GAUGE" },
+                    data_source => {
+                       name    => $ds[1],
+                        type    => 'GAUGE'},
+                    archive     => { 
+                        rows      => 60*24*31,
+                        cfunc     => 'AVERAGE',
+                    },
+                    archive => {
+                        rows    => 60*24*31,
+                        cfunc     => 'AVERAGE',
+                    },
             );
-    if(exists $devices->{$dev}->{stat}->{$port}){
-        my @t = sort keys %{$devices->{$dev}->{stat}->{$port}->{$oids[0]}};
-            foreach my $t ( @t){
-              unless($t > $start && $t < $end ){ next ;}
-                    my $vals;
+            foreach my $t (@t){
+                unless($t > $start && $t < $end ){ next ;}
+                my $vals;
                 foreach my $oid ( 0..$#oids  ){
                     $vals->{$ds[$oid]} =  $devices->{$dev}->{stat}->{$port}->{$oids[$oid]}->{$t} ;
                 }
-#                    print $t , " ", values %$vals, " ",keys %$vals,"\n";
-                    $rrd->update(time => $t , values => $vals );
+                $rrd->update(time => $t , values => $vals );
             }
             unless(-d "$path/$dev/$port"){
                 mkpath "$path/$dev/$port";
@@ -102,39 +105,39 @@ if(defined $dev && defined $port){
             rrd_graph($rrd, "$path/$dev/$port/${base_name}_w.png", $end-7*24*3600, $end ,\@ds);
         }
     }
-            foreach( keys %$devices){
-                print "<a href=port_mon.pl?device=$_> $_ </a> &nbsp&nbsp";
-            }
-            print $q->h1("Statistics for port ".$devices->{$dev}->{stat}->{$port}->{name}." on device $dev ");
-            print "<table>";
-            foreach my $p (qw/4h 12h 24h w/){
-                print "<tr>";
-                foreach $be (qw/bytes errors/){
-                    print "<td><image src = \"../img/$dev/$port/${be}_$p.png\" > </image></td>";
-                }
-                print "</tr>\n";
-            }
-            print "</table>\n";
-    }elsif(defined $dev){
-        print $q->h1("Knowing ports for $dev");
-        print "<table>\n";
-        if(exists $devices->{$dev}){
-            foreach(sort {$a <=> $b} keys %{$devices->{$dev}->{stat}}){
-                print "<tr><td>";
-                print "<a href=port_mon.pl?device=$dev&port=$_> $dev / $_ (".$devices->{$dev}->{stat}->{$_}->{name}.") </a>";
-                print "</td></tr>\n";
-            }
-            print "</table>";
+    foreach( sort keys %$devices){
+        print "<a href=port_mon.pl?device=$_> $_ </a> &nbsp&nbsp";
+    }
+    print $q->h1("Statistics for port ".$devices->{$dev}->{stat}->{$port}->{name}." on device $dev ");
+    print "<table>";
+    foreach my $p (qw/4h 12h 24h w/){
+        print "<tr>";
+        foreach $be (qw/bytes errors/){
+            print "<td><image src = \"../img/$dev/$port/${be}_$p.png\" > </image></td>";
         }
-    }else{
-        print $q->h1('Knowing devices');
-        print "<table>\n";
-        foreach(keys %$devices){
+        print "</tr>\n";
+    }
+    print "</table>\n";
+}elsif(defined $dev){
+    print $q->h1("Knowing ports for $dev");
+    print "<table>\n";
+    if(exists $devices->{$dev}){
+        foreach(sort {$a <=> $b} keys %{$devices->{$dev}->{stat}}){
             print "<tr><td>";
-            print "<a href=port_mon.pl?device=$_> $_ </a>";
+            print "<a href=port_mon.pl?device=$dev&port=$_> $dev / $_ (".$devices->{$dev}->{stat}->{$_}->{name}.") </a>";
             print "</td></tr>\n";
         }
         print "</table>";
     }
+}else{
+    print $q->h1('Knowing devices');
+    print "<table>\n";
+    foreach( sort keys %$devices){
+        print "<tr><td>";
+        print "<a href=port_mon.pl?device=$_> $_ </a>";
+        print "</td></tr>\n";
+    }
+    print "</table>";
+}
 
-    print $q->end_html;
+print $q->end_html;

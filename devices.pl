@@ -8,7 +8,9 @@ use Storable;
 use Data::Dumper;
 use Time::HiRes qw(tv_interval gettimeofday);
 my $d_store_path = 'dev_store';
-my @ip_ranges = ('192.168.2.0/24', '172.31.31.0/24');
+my @ip_ranges = ('192.168.2.0/24', 
+ '172.31.31.0/24'
+        );
 my $community = 'read';
 my @oids = (
         '1.3.6.1.2.1.31.1.1.1.6',
@@ -17,28 +19,31 @@ my @oids = (
         '1.3.6.1.2.1.2.2.1.20',
         '1.3.6.1.2.1.2.2.1.5',
         '1.3.6.1.2.1.2.2.1.2',
+        '1.3.6.1.2.1.2.2.1.10',
+        '1.3.6.1.2.1.2.2.1.16',
 );
 my %oids_ps = (
+    # 64bit counter
     '1.3.6.1.2.1.31.1.1.1.6' => 1, 
     '1.3.6.1.2.1.31.1.1.1.10' => 1,
+    # 32bit counter
+    '1.3.6.1.2.1.2.2.1.10' => 2, 
+    '1.3.6.1.2.1.2.2.1.16' => 2,
     );
 my %aux_oids = (
     'ifspeed' => '1.3.6.1.2.1.2.2.1.5',
     'ifnum' => '1.3.6.1.2.1.2.1.0',
     'descr' => '1.3.6.1.2.1.2.2.1.2',
+    'int64' => '1.3.6.1.2.1.31.1.1.1.6',
 );
 my $devices;
-my %skip_ip;
 if(-f $d_store_path){
     my $t0 = [gettimeofday];
     $devices =  retrieve($d_store_path);
     print "load time : ", tv_interval ( $t0, [gettimeofday]),"\n";
-
 }
-
-sub get_callback
-{
-    my ($session, $shared, $type, $oids) = @_;
+sub get_callback{
+    my ($session, $shared, $type) = @_;
     my $result = $session->var_bind_list();
     my $t = time;
     if (!defined $result) {
@@ -46,24 +51,26 @@ sub get_callback
 #              $session->hostname(), $session->error();
         return -1;
     }
-    printf "callback from host '%s' .\n",
-           $session->hostname();
     if($type == 1){
         my $t = time;
-        foreach(keys %$result){
-            if($_ =~ /^($aux_oids{descr}|$aux_oids{ifspeed}).\d{1,2}$/){
-                $shared->{$_}= $result->{$_}||'';
+        foreach my $key (keys %$result){
+            $key =~ /^((\d{1,2}\.?)+)\.(\d+)$/;
+            my ($oid, $int) = ($1, $3);
+            if($oid =~ /^($aux_oids{descr}|$aux_oids{ifspeed})$/){
+                $shared->{$key}= $result->{$key}||'';
             }else{
-                $shared->{$_}->{$t} = $result->{$_};
+                if($oids_ps{$oid} == 2 && $result->{$aux_oids{int64}.".$int"} =~/^\d+$/ ){
+                # if exists 64bit value => skip
+                    next;
+                }
+                $shared->{$key}->{$t} = $result->{$key};
             }
-#        print "-$_-", $result->{$_},"-\n";
         }
     }else{
         if($result->{$aux_oids{ifnum}} > 0){
             $shared->{$session->hostname()}->{num} = $result->{$aux_oids{ifnum}};
         }
     }
-
     return;
 }
 sub snmp_req {
@@ -84,9 +91,8 @@ sub snmp_req {
 
     my $result = $session->get_request(
             -varbindlist => $oids,
-            -callback    => [ \&get_callback , $shared, $type, $oids],
+            -callback    => [ \&get_callback , $shared, $type],
             );  
-
     if (!defined $result) {
         printf "ERROR: %s.\n", $session->error();
         $session->close();
@@ -97,7 +103,6 @@ sub search_new_devices {
     my ($devices) = @_;
     foreach (@ip_ranges){
         my $ip = new Net::IP ("$_") or die (Net::IP::Error());
-        my %dp;
         my $host_count;
         do{
             snmp_req( $ip->ip(), [$aux_oids{ifnum}], $devices);
@@ -111,7 +116,6 @@ sub search_new_devices {
     }
     return $devices;
 }
-
 sub polling_devices {
     my ($devices) = @_;
     foreach my $ip (keys %$devices){
@@ -134,33 +138,34 @@ sub polling_devices {
                 $devices->{$ip}->{stat}->{$int}->{name} =  $devices->{$ip}->{int}->{$p};
             }else{
                 my @t = sort keys %{$devices->{$ip}->{int}->{$p}};
-                if($#t>0){
-                    if($devices->{$ip}->{int}->{$p}->{$t[$#t]} =~ /noSuch/){
-                        delete $devices->{$ip}->{int}->{$p}; 
-                        delete $devices->{$ip}->{stat}->{$int}->{$oid};
+                if($devices->{$ip}->{int}->{$p}->{$t[$#t]} =~ /noSuch/){
+                    delete $devices->{$ip}->{int}->{$p}; 
+                    delete $devices->{$ip}->{stat}->{$int}->{$oid};
+                }
+                next unless($#t>0);
+                if($oids_ps{$oid}){
+                    $devices->{$ip}->{stat}->{$int}->{$oid}->{$t[$#t]} = 
+                        $devices->{$ip}->{int}->{$p}->{$t[$#t]} - $devices->{$ip}->{int}->{$p}->{$t[$#t-1]};
+                    my $val =  int( $devices->{$ip}->{stat}->{$int}->{$oid}->{$t[$#t]}/ ($t[$#t] - $t[$#t-1])) ;
+                    # normalize => 0 < val < ifspeed 
+                    if( $val*8 > $devices->{$ip}->{int}->{$aux_oids{ifspeed}.".$int"}){
+                        $val = ($devices->{$ip}->{int}->{$aux_oids{ifspeed}.".$int"})/8;
+                    }elsif($val < 0){
+                        $val = 0;
                     }
-                    if($oids_ps{$oid}){
-                        $devices->{$ip}->{stat}->{$int}->{$oid}->{$t[$#t]} = 
-                            $devices->{$ip}->{int}->{$p}->{$t[$#t]} - $devices->{$ip}->{int}->{$p}->{$t[$#t-1]};
-                        my $val =  int( $devices->{$ip}->{stat}->{$int}->{$oid}->{$t[$#t]}/ ($t[$#t] - $t[$#t-1])) ;
-                        if( $val*8 > $devices->{$ip}->{int}->{$aux_oids{ifspeed}.".$int"}){
-                            $val = ($devices->{$ip}->{int}->{$aux_oids{ifspeed}.".$int"})/8;
-                        }
-                        $devices->{$ip}->{stat}->{$int}->{$oid}->{$t[$#t]}  = $val;
-                        print $devices->{$ip}->{stat}->{$int}->{$oid}->{$t[$#t]} ,"\n";
-                    }else{
-                        $devices->{$ip}->{stat}->{$int}->{$oid}->{$t[$#t]} =
-                            $devices->{$ip}->{int}->{$p}->{$t[$#t]};
-                    }
-                    foreach(0 .. ($#t-2)){ 
-                        delete $devices->{$ip}->{int}->{$p}->{$t[$_]};
-                    }
+                    $devices->{$ip}->{stat}->{$int}->{$oid}->{$t[$#t]}  = $val;
+                }else{
+                    $devices->{$ip}->{stat}->{$int}->{$oid}->{$t[$#t]} =
+                        $devices->{$ip}->{int}->{$p}->{$t[$#t]};
+                }
+                # for calc speed need only 2 timestamps
+                foreach(0 .. ($#t-2)){ 
+                    delete $devices->{$ip}->{int}->{$p}->{$t[$_]};
                 }
             }
         }
     }
     return $devices;
-
 }
 
 $devices = search_new_devices($devices);
