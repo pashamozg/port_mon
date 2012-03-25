@@ -6,7 +6,7 @@ use RRDTool::OO;
 use Data::Dumper;
 
 my @names = qw/bytes_in_32 bytes_in_64 bytes_out_32 bytes_out_64 error_in error_out/;
-my $d_store_path = '/home/pasha/projects/port_mon/dev_store';
+my $d_store_path = 'dev_store';
 my $image_refresh_time = 60;
 my $step = 300;
 my $q = CGI->new();
@@ -18,13 +18,11 @@ my $devices;
 
 sub all_devices {
     print $q->h2("Known devices ");
-    print "<table>\n";
+    print "<table><tr><td>\n";
     foreach( sort keys %$devices){
-        print "<tr><td>";
-        print "<a href=port_mon.pl?device=$_> $_ </a>";
-        print "</td></tr>\n";
+        print "<a href=port_mon1.pl?device=$_> $_ </a>&nbsp&nbsp&nbsp ";
     }
-    print "</table>\n";
+    print "</td></tr></table>\n";
 }
 sub ports {
     print $q->h2("Ports on device $dev ");
@@ -33,7 +31,7 @@ sub ports {
         print "<table>";
         print "<tr><td>" ;
         foreach(sort {$devices->{$dev}->{stat}->{$a}->{descr} cmp $devices->{$dev}->{stat}->{$b}->{descr}} keys %{$devices->{$dev}->{stat}}){
-            print "<a href=port_mon.pl?device=$dev&port=$_>".$devices->{$dev}->{stat}->{$_}->{descr}."</a>&nbsp&nbsp&nbsp ";
+            print "<a href=port_mon1.pl?device=$dev&port=$_>".$devices->{$dev}->{stat}->{$_}->{descr}."</a>&nbsp&nbsp&nbsp ";
 #            if(++$c%15==0){print "<br>";}
         }
         print "</td>\n";
@@ -76,7 +74,7 @@ sub rrd_graph {
 print $q->header,
       $q->start_html('Page with device statistics');
 if(defined $dev && defined $port){
-    my $path = '../htdocs/img';
+    my $path = '/var/www/img';
     my $end = time();
     my $start  = $end - (3600*24*31);
     foreach my $type ( @names ){

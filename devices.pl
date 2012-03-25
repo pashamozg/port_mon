@@ -1,38 +1,32 @@
 #!/usr/bin/perl
 
 use strict;
-
+use lib "/usr/lib/perl/5.10";
 use Net::SNMP qw(:snmp);
 use Net::IP;
 use Storable;
 use Data::Dumper;
 my $d_store_path = 'dev_store';
-my @ip_ranges = (
-# '192.168.2.0/24', 
-# '172.31.31.32/27',
- '95.215.85.0/28',
-        );
-# my $community = 'read';
- my $community = 'public';
+my @ip_ranges = ('192.168.0.0/16', 
+); 
 
- my $oid_iftable = '1.3.6.1.2.1.2.2';
-my $oid_ifXtable = '1.3.6.1.2.1.31.1.1';
-
+my $community = 'public';
 my %oids_per_s = (
-    # 64bit counter
-    'bytes_in_64' => '1.3.6.1.2.1.31.1.1.1.6',
-    'bytes_out_64' => '1.3.6.1.2.1.31.1.1.1.10',
-    # 32bit counter
-    'bytes_in_32' => '1.3.6.1.2.1.2.2.1.10' , 
-    'bytes_out_32' => '1.3.6.1.2.1.2.2.1.16',
-    );
+# 64bit counter
+        'bytes_in_64' => '1.3.6.1.2.1.31.1.1.1.6',
+        'bytes_out_64' => '1.3.6.1.2.1.31.1.1.1.10',
+# 32bit counter
+        'bytes_in_32' => '1.3.6.1.2.1.2.2.1.10' , 
+        'bytes_out_32' => '1.3.6.1.2.1.2.2.1.16',
+        );
 my %oids_sum = (
-    'ifspeed' => '1.3.6.1.2.1.2.2.1.5',
-    'descr' => '1.3.6.1.2.1.2.2.1.2',
-    'error_in' => '1.3.6.1.2.1.2.2.1.14',
-    'error_out' => '1.3.6.1.2.1.2.2.1.20',
-);
-
+        'ifspeed' => '1.3.6.1.2.1.2.2.1.5',
+        'descr' => '1.3.6.1.2.1.2.2.1.2',
+        'error_in' => '1.3.6.1.2.1.2.2.1.14',
+        'error_out' => '1.3.6.1.2.1.2.2.1.20',
+        );
+my %oids_per_s_inv = map {$oids_per_s{$_} => $_} keys %oids_per_s;
+my %oids_sum_inv = map {$oids_sum{$_} => $_} keys %oids_sum;
 my $devices;
 if(-f $d_store_path){
     $devices =  retrieve($d_store_path);
@@ -54,16 +48,14 @@ sub get_callback{
             return; # Table is done.
         }
         my ($port) = ($next =~ /\.(\d+)$/);
-        my $t = time;
-        foreach my $base (keys %oids_per_s){
-            if (oid_base_match($oids_per_s{$base}, $next)) {
-                $shared->{$port}->{$base}->{$t} = $list->{$next};
-            }
+        if(exists $oids_per_s_inv{$base_oid->[0]}){
+	my $t = time;
+            $shared->{$session->hostname()}->{'int'}->{$port}->{$oids_per_s_inv{$base_oid->[0]}}->{$t} = $list->{$next};
+#    	    print $shared->{$port}->{$oids_per_s_inv{$base_oid->[0]}}->{$t}, "\n";
         }
-        foreach my $base (keys %oids_sum){
-            if (oid_base_match($oids_sum{$base}, $next)) {
-                $shared->{$port}->{$base} = $list->{$next};
-            }
+        if(exists $oids_sum_inv{$base_oid->[0]}){
+            $shared->{$session->hostname()}->{'int'}->{$port}->{$oids_sum_inv{$base_oid->[0]}} = $list->{$next};
+#            $shared->{$port}->{$oids_sum_inv{$base_oid->[0]}} = $list->{$next};
         }
     }
     my $result = $session->get_next_request(
@@ -78,8 +70,8 @@ sub snmp_req {
             -community    =>  $community,
             -version      => 'snmpv2c',
             -nonblocking  =>  1,
-              -timeout  => 2,
-              -retries  => 2,
+            -timeout  => 2,
+            -retries  => 2,
             );  
 
     if (!defined $session) {
@@ -103,7 +95,7 @@ sub search_new_devices {
         my $ip = new Net::IP ("$_") or die (Net::IP::Error());
         my $host_count;
         do{
-            snmp_req( $ip->ip(), [$oid_iftable], $devices->{$ip->ip()}->{'int'});
+            snmp_req( $ip->ip(), [$oids_sum{descr}], $devices);
             ++$host_count;
             if($host_count==200){
                 snmp_dispatcher();
@@ -119,7 +111,12 @@ sub polling_devices {
     my $host_count = 0;
     foreach my $ip (keys %$devices){
         ++$host_count;
-        snmp_req($ip, [$oid_ifXtable], $devices->{$ip}->{'int'});
+        foreach(values %oids_sum){
+            snmp_req($ip, [$_], $devices);
+        }
+        foreach(values %oids_per_s){
+            snmp_req($ip, [$_], $devices);
+        }
         if($host_count==200){
             snmp_dispatcher();
         }
@@ -154,7 +151,7 @@ sub polling_devices {
                     }
                 }elsif(exists $oids_sum{$type}){
                     if($type =~ /error/){
-                     $devices->{$ip}->{stat}->{$p}->{$type}->{time()} = $devices->{$ip}->{'int'}->{$p}->{$type} + 0 ;
+                        $devices->{$ip}->{stat}->{$p}->{$type}->{time()} = $devices->{$ip}->{'int'}->{$p}->{$type} + 0 ;
                     }else{
                         $devices->{$ip}->{stat}->{$p}->{$type} = $devices->{$ip}->{'int'}->{$p}->{$type} ;
                     }
