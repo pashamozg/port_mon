@@ -58,22 +58,16 @@ sub get_callback{
         foreach my $base (keys %oids_per_s){
             if (oid_base_match($oids_per_s{$base}, $next)) {
                 $shared->{$port}->{$base}->{$t} = $list->{$next};
-#            if($base_oid->[0] eq $oid_ifXtable ){
-#                   print "here $port $base $$list{$next} $$base_oid[0]\n";
-#               }
             }
         }
         foreach my $base (keys %oids_sum){
             if (oid_base_match($oids_sum{$base}, $next)) {
                 $shared->{$port}->{$base} = $list->{$next};
-#    print "here $port $base \n";
             }
         }
-#    print $next," ",$list->{$next}, "\n";
     }
     my $result = $session->get_next_request(
             -varbindlist    => [ $next ],
-#            -maxrepetitions => 10,
             );
     return;
 }
@@ -84,7 +78,6 @@ sub snmp_req {
             -community    =>  $community,
             -version      => 'snmpv2c',
             -nonblocking  =>  1,
-#              -translate   => [-octetstring => 0],
               -timeout  => 2,
               -retries  => 2,
             );  
@@ -97,7 +90,6 @@ sub snmp_req {
     my $result = $session->get_next_request(
             -varbindlist => $oids,
             -callback    => [ \&get_callback , $shared, $oids],
-#           -maxrepetitions => 10,
             );  
     if (!defined $result) {
         printf "ERROR: %s.\n", $session->error();
@@ -150,15 +142,12 @@ sub polling_devices {
                     next unless($#t>0);
                     $devices->{$ip}->{stat}->{$p}->{$type}->{$t[$#t]} = 
                         $devices->{$ip}->{'int'}->{$p}->{$type}->{$t[$#t]} - $devices->{$ip}->{'int'}->{$p}->{$type}->{$t[$#t-1]};
-#  print $t[$#t-1]," ",$t[$#t]," ", $devices->{$ip}->{'int'}->{$p}->{$type}->{$t[$#t-1]}," ",$devices->{$ip}->{'int'}->{$p}->{$type}->{$t[$#t]}, "\n";
                     my $val =  int( $devices->{$ip}->{stat}->{$p}->{$type}->{$t[$#t]}/ ($t[$#t] - $t[$#t-1])) ;
-#                    print "= $p $type $val\n";
                     if( $devices->{$ip}->{'int'}->{$p}->{ifspeed} > 0 && $val*8 > $devices->{$ip}->{'int'}->{$p}->{ifspeed}){
                         $val = ( $devices->{$ip}->{'int'}->{$p}->{ifspeed})/8;
                     }elsif($val < 0){
                         $val = 0;
                     }
-#                    print "$p $type $val\n";
                     $devices->{$ip}->{stat}->{$p}->{$type}->{$t[$#t]}  = $val*8;
                     foreach(0 .. ($#t-2)){ 
                         delete $devices->{$ip}->{'int'}->{$p}->{$type}->{$t[$_]};
@@ -173,11 +162,10 @@ sub polling_devices {
             }
         }
     }
-# print Dumper($devices);
     return $devices;
 }
 
 $devices = search_new_devices($devices);
- $devices = polling_devices($devices);
+$devices = polling_devices($devices);
 # print Dumper($devices);
 store $devices , $d_store_path;
