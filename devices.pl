@@ -2,86 +2,91 @@
 
 use strict;
 
-use Net::SNMP;
+use Net::SNMP qw(:snmp);
 use Net::IP;
 use Storable;
 use Data::Dumper;
-use Time::HiRes qw(tv_interval gettimeofday);
 my $d_store_path = 'dev_store';
-my @ip_ranges = ('192.168.2.0/24', 
- '172.31.31.0/24'
+my @ip_ranges = (
+# '192.168.2.0/24', 
+# '172.31.31.32/27',
+ '95.215.85.0/28',
         );
-my $community = 'read';
-my @oids = (
-        '1.3.6.1.2.1.31.1.1.1.6',
-        '1.3.6.1.2.1.31.1.1.1.10',
-        '1.3.6.1.2.1.2.2.1.14',
-        '1.3.6.1.2.1.2.2.1.20',
-        '1.3.6.1.2.1.2.2.1.5',
-        '1.3.6.1.2.1.2.2.1.2',
-        '1.3.6.1.2.1.2.2.1.10',
-        '1.3.6.1.2.1.2.2.1.16',
-);
-my %oids_ps = (
+# my $community = 'read';
+ my $community = 'public';
+
+ my $oid_iftable = '1.3.6.1.2.1.2.2';
+my $oid_ifXtable = '1.3.6.1.2.1.31.1.1';
+
+my %oids_per_s = (
     # 64bit counter
-    '1.3.6.1.2.1.31.1.1.1.6' => 1, 
-    '1.3.6.1.2.1.31.1.1.1.10' => 1,
+    'bytes_in_64' => '1.3.6.1.2.1.31.1.1.1.6',
+    'bytes_out_64' => '1.3.6.1.2.1.31.1.1.1.10',
     # 32bit counter
-    '1.3.6.1.2.1.2.2.1.10' => 2, 
-    '1.3.6.1.2.1.2.2.1.16' => 2,
+    'bytes_in_32' => '1.3.6.1.2.1.2.2.1.10' , 
+    'bytes_out_32' => '1.3.6.1.2.1.2.2.1.16',
     );
-my %aux_oids = (
+my %oids_sum = (
     'ifspeed' => '1.3.6.1.2.1.2.2.1.5',
-    'ifnum' => '1.3.6.1.2.1.2.1.0',
     'descr' => '1.3.6.1.2.1.2.2.1.2',
-    'int64' => '1.3.6.1.2.1.31.1.1.1.6',
+    'error_in' => '1.3.6.1.2.1.2.2.1.14',
+    'error_out' => '1.3.6.1.2.1.2.2.1.20',
 );
+
 my $devices;
 if(-f $d_store_path){
-    my $t0 = [gettimeofday];
     $devices =  retrieve($d_store_path);
-    print "load time : ", tv_interval ( $t0, [gettimeofday]),"\n";
 }
 sub get_callback{
-    my ($session, $shared, $type) = @_;
-    my $result = $session->var_bind_list();
-    my $t = time;
-    if (!defined $result) {
+    my ($session, $shared, $base_oid) = @_;
+    my $list = $session->var_bind_list();
+    if (!defined $list) {
 #        printf "ERROR: Get request failed for host '%s': %s.\n",
-#              $session->hostname(), $session->error();
+#             $session->hostname(), $session->error();
         return -1;
     }
-    if($type == 1){
+    my @names = $session->var_bind_names();
+    my $next = undef;
+#    print "get callback from ", $session->hostname(),"\n";
+    while(@names){
+        $next = shift @names;
+        if (!oid_base_match($base_oid->[0], $next)) {
+            return; # Table is done.
+        }
+        my ($port) = ($next =~ /\.(\d+)$/);
         my $t = time;
-        foreach my $key (keys %$result){
-            $key =~ /^((\d{1,2}\.?)+)\.(\d+)$/;
-            my ($oid, $int) = ($1, $3);
-            if($oid =~ /^($aux_oids{descr}|$aux_oids{ifspeed})$/){
-                $shared->{$key}= $result->{$key}||'';
-            }else{
-                if($oids_ps{$oid} == 2 && $result->{$aux_oids{int64}.".$int"} =~/^\d+$/ ){
-                # if exists 64bit value => skip
-                    next;
-                }
-                $shared->{$key}->{$t} = $result->{$key};
+        foreach my $base (keys %oids_per_s){
+            if (oid_base_match($oids_per_s{$base}, $next)) {
+                $shared->{$port}->{$base}->{$t} = $list->{$next};
+#            if($base_oid->[0] eq $oid_ifXtable ){
+#                   print "here $port $base $$list{$next} $$base_oid[0]\n";
+#               }
             }
         }
-    }else{
-        if($result->{$aux_oids{ifnum}} > 0){
-            $shared->{$session->hostname()}->{num} = $result->{$aux_oids{ifnum}};
+        foreach my $base (keys %oids_sum){
+            if (oid_base_match($oids_sum{$base}, $next)) {
+                $shared->{$port}->{$base} = $list->{$next};
+#    print "here $port $base \n";
+            }
         }
+#    print $next," ",$list->{$next}, "\n";
     }
+    my $result = $session->get_next_request(
+            -varbindlist    => [ $next ],
+#            -maxrepetitions => 10,
+            );
     return;
 }
 sub snmp_req {
-    my ($ip , $oids , $shared, $type) = @_;
+    my ($ip , $oids , $shared) = @_;
     my ($session, $error) = Net::SNMP->session(
             -hostname     =>  $ip,
             -community    =>  $community,
             -version      => 'snmpv2c',
-            -timeout      =>  2,
-            -retries      =>  2,
             -nonblocking  =>  1,
+#              -translate   => [-octetstring => 0],
+              -timeout  => 2,
+              -retries  => 2,
             );  
 
     if (!defined $session) {
@@ -89,9 +94,10 @@ sub snmp_req {
         return -1;
     }   
 
-    my $result = $session->get_request(
+    my $result = $session->get_next_request(
             -varbindlist => $oids,
-            -callback    => [ \&get_callback , $shared, $type],
+            -callback    => [ \&get_callback , $shared, $oids],
+#           -maxrepetitions => 10,
             );  
     if (!defined $result) {
         printf "ERROR: %s.\n", $session->error();
@@ -105,9 +111,9 @@ sub search_new_devices {
         my $ip = new Net::IP ("$_") or die (Net::IP::Error());
         my $host_count;
         do{
-            snmp_req( $ip->ip(), [$aux_oids{ifnum}], $devices);
+            snmp_req( $ip->ip(), [$oid_iftable], $devices->{$ip->ip()}->{'int'});
             ++$host_count;
-            if($host_count==150){
+            if($host_count==200){
                 snmp_dispatcher();
                 $host_count=0;
             }
@@ -118,57 +124,60 @@ sub search_new_devices {
 }
 sub polling_devices {
     my ($devices) = @_;
+    my $host_count = 0;
     foreach my $ip (keys %$devices){
-        foreach my $int (1 .. $devices->{$ip}->{num}){
-            my @r_oids = map {$_.".$int"} @oids;
-            snmp_req($ip, \@r_oids, $devices->{$ip}->{int}, 1);
+        ++$host_count;
+        snmp_req($ip, [$oid_ifXtable], $devices->{$ip}->{'int'});
+        if($host_count==200){
+            snmp_dispatcher();
         }
-        snmp_dispatcher();
     }
+    snmp_dispatcher();
 # tranform data to use in rrdtool
 # calculate speed on interface
 # set description 
 # set errors
     foreach my $ip (keys %$devices){
-        foreach my $p (keys %{$devices->{$ip}->{int}}){
-            next if ($p =~ /^$aux_oids{ifspeed}/);
-            $p =~ /^((\d{1,2}\.?)+)\.(\d+)$/;
-            my ($oid , $int) = ($1, $3);
-            if($oid eq "$aux_oids{descr}" && $devices->{$ip}->{int}->{$p} ne ''){
-                $devices->{$ip}->{stat}->{$int}->{name} =  $devices->{$ip}->{int}->{$p};
-            }else{
-                my @t = sort keys %{$devices->{$ip}->{int}->{$p}};
-                if($devices->{$ip}->{int}->{$p}->{$t[$#t]} =~ /noSuch/){
-                    delete $devices->{$ip}->{int}->{$p}; 
-                    delete $devices->{$ip}->{stat}->{$int}->{$oid};
-                }
-                next unless($#t>0);
-                if($oids_ps{$oid}){
-                    $devices->{$ip}->{stat}->{$int}->{$oid}->{$t[$#t]} = 
-                        $devices->{$ip}->{int}->{$p}->{$t[$#t]} - $devices->{$ip}->{int}->{$p}->{$t[$#t-1]};
-                    my $val =  int( $devices->{$ip}->{stat}->{$int}->{$oid}->{$t[$#t]}/ ($t[$#t] - $t[$#t-1])) ;
-                    # normalize => 0 < val < ifspeed 
-                    if( $val*8 > $devices->{$ip}->{int}->{$aux_oids{ifspeed}.".$int"}){
-                        $val = ($devices->{$ip}->{int}->{$aux_oids{ifspeed}.".$int"})/8;
+        my @all_int = keys %{$devices->{$ip}->{'int'}};
+        if($#all_int == -1 ){
+            delete $devices->{$ip};
+            next;
+        }
+        foreach my $p (@all_int){
+            foreach my $type (keys %{$devices->{$ip}->{'int'}->{$p}}){
+                if(exists $oids_per_s{$type}){
+                    my @t = sort keys %{$devices->{$ip}->{'int'}->{$p}->{$type}};
+                    next unless($#t>0);
+                    $devices->{$ip}->{stat}->{$p}->{$type}->{$t[$#t]} = 
+                        $devices->{$ip}->{'int'}->{$p}->{$type}->{$t[$#t]} - $devices->{$ip}->{'int'}->{$p}->{$type}->{$t[$#t-1]};
+#  print $t[$#t-1]," ",$t[$#t]," ", $devices->{$ip}->{'int'}->{$p}->{$type}->{$t[$#t-1]}," ",$devices->{$ip}->{'int'}->{$p}->{$type}->{$t[$#t]}, "\n";
+                    my $val =  int( $devices->{$ip}->{stat}->{$p}->{$type}->{$t[$#t]}/ ($t[$#t] - $t[$#t-1])) ;
+#                    print "= $p $type $val\n";
+                    if( $devices->{$ip}->{'int'}->{$p}->{ifspeed} > 0 && $val*8 > $devices->{$ip}->{'int'}->{$p}->{ifspeed}){
+                        $val = ( $devices->{$ip}->{'int'}->{$p}->{ifspeed})/8;
                     }elsif($val < 0){
                         $val = 0;
                     }
-                    $devices->{$ip}->{stat}->{$int}->{$oid}->{$t[$#t]}  = $val;
-                }else{
-                    $devices->{$ip}->{stat}->{$int}->{$oid}->{$t[$#t]} =
-                        $devices->{$ip}->{int}->{$p}->{$t[$#t]};
-                }
-                # for calc speed need only 2 timestamps
-                foreach(0 .. ($#t-2)){ 
-                    delete $devices->{$ip}->{int}->{$p}->{$t[$_]};
+#                    print "$p $type $val\n";
+                    $devices->{$ip}->{stat}->{$p}->{$type}->{$t[$#t]}  = $val*8;
+                    foreach(0 .. ($#t-2)){ 
+                        delete $devices->{$ip}->{'int'}->{$p}->{$type}->{$t[$_]};
+                    }
+                }elsif(exists $oids_sum{$type}){
+                    if($type =~ /error/){
+                     $devices->{$ip}->{stat}->{$p}->{$type}->{time()} = $devices->{$ip}->{'int'}->{$p}->{$type} + 0 ;
+                    }else{
+                        $devices->{$ip}->{stat}->{$p}->{$type} = $devices->{$ip}->{'int'}->{$p}->{$type} ;
+                    }
                 }
             }
         }
     }
+# print Dumper($devices);
     return $devices;
 }
 
 $devices = search_new_devices($devices);
-$devices = polling_devices($devices);
-#print Dumper($devices);
+ $devices = polling_devices($devices);
+# print Dumper($devices);
 store $devices , $d_store_path;
